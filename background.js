@@ -1,13 +1,17 @@
 // Background script. Owns settings, network, and the messaging boundary
-// between the toolbar/auto-trigger events and the in-page display script.
+// between the auto-trigger event and the in-page display script.
 // Loaded after translator.js (see manifest.background.scripts).
 
 const DEBUG = false;
-const log = (...a) => DEBUG && console.log("[InlineTranslator]", ...a);
+const log = (...a) => DEBUG && console.log("[AutoTranslate]", ...a);
 
 const DEFAULT_SETTINGS = {
+  enabled: true,
   targetLang: "en",
-  // { from: "de", to: "en"|"", enabled: true }. Empty `to` means "use targetLang".
+  // Optional overrides: { from: "de", to: "fr", enabled: true } means
+  // "when a message is detected as German, translate it to French instead
+  // of the default targetLang". Anything not covered by a rule is still
+  // translated to targetLang.
   autoRules: [],
 };
 
@@ -23,7 +27,6 @@ async function loadSettings() {
 
 // ---- Display script injection -----------------------------------------
 
-// Best-effort registration so future message displays auto-pick the script.
 (async () => {
   try {
     if (messenger.messageDisplayScripts?.register) {
@@ -36,17 +39,14 @@ async function loadSettings() {
   }
 })();
 
-// Inject on-demand for the message that's already on screen. Idempotent —
-// the script guards itself with window.__inlineTranslatorInstalled.
 async function ensureDisplayScript(tabId) {
   await messenger.tabs.executeScript(tabId, { file: "messageDisplayScript.js" });
 }
 
 // ---- Translation request handler --------------------------------------
 
-// Pick the longest non-trivial string for language detection. Falls back to
-// the first text if nothing better exists. Capped to 300 chars to keep the
-// probe call cheap.
+// Pick the longest non-trivial string for language detection. Capped to 300
+// chars to keep the probe call cheap.
 function pickProbe(texts) {
   let best = "";
   for (const t of texts) {
@@ -56,84 +56,102 @@ function pickProbe(texts) {
   return best.slice(0, 300);
 }
 
-async function handleTranslate({ texts, mode }) {
-  if (!Array.isArray(texts) || !texts.length) {
+function resolveTarget(detectedSource, settings) {
+  const rule = (settings.autoRules || [])
+    .filter((r) => r && r.enabled)
+    .find((r) => r.from === detectedSource);
+  return (rule && rule.to) || settings.targetLang;
+}
+
+async function handleTranslate({ texts, force }) {
+  if (!Array.isArray(texts) || !texts.length) return { ok: true, skip: true };
+
+  const settings = await loadSettings();
+  if (!settings.enabled && !force) return { ok: true, skip: true };
+
+  const probe = pickProbe(texts);
+  if (!probe.trim()) return { ok: true, skip: true };
+
+  const { detectedSource } = await callGoogleTranslate(probe, settings.targetLang);
+  if (!detectedSource) return { ok: true, skip: true };
+
+  const target = resolveTarget(detectedSource, settings);
+  if (detectedSource === target && !force) {
+    log("source already matches target, skipping", detectedSource);
     return { ok: true, skip: true };
   }
 
-  const settings = await loadSettings();
-
-  if (mode === "auto") {
-    const rules = (settings.autoRules || []).filter((r) => r && r.enabled);
-    if (!rules.length) return { ok: true, skip: true };
-
-    const probe = pickProbe(texts);
-    if (!probe.trim()) return { ok: true, skip: true };
-
-    const { detectedSource } = await callGoogleTranslate(probe, settings.targetLang);
-    if (!detectedSource) return { ok: true, skip: true };
-
-    const rule = rules.find((r) => r.from === detectedSource);
-    if (!rule) {
-      log("auto: no rule for", detectedSource);
-      return { ok: true, skip: true };
-    }
-
-    const target = rule.to || settings.targetLang;
-    const { translations, detectedSource: src } = await translateBatch(texts, target);
-    return {
-      ok: true,
-      translations,
-      detectedSource: src || detectedSource,
-      targetLang: target,
-    };
-  }
-
-  // Manual click — always translate to settings.targetLang.
-  const { translations, detectedSource } = await translateBatch(texts, settings.targetLang);
+  const { translations, detectedSource: src } = await translateBatch(texts, target);
   return {
     ok: true,
     translations,
-    detectedSource,
-    targetLang: settings.targetLang,
+    detectedSource: src || detectedSource,
+    targetLang: target,
   };
 }
 
 messenger.runtime.onMessage.addListener((msg) => {
-  if (!msg || msg.type !== "translate") return false;
-  return handleTranslate(msg).catch((e) => {
-    console.error("[InlineTranslator] handleTranslate failed", e);
-    return { ok: false, error: String(e?.message || e) };
-  });
+  if (!msg) return false;
+  if (msg.type === "translate") {
+    return handleTranslate(msg).catch((e) => {
+      console.error("[AutoTranslate] handleTranslate failed", e);
+      return { ok: false, error: String(e?.message || e) };
+    });
+  }
+  if (msg.type === "manualKickoff") {
+    return manualKickoff().catch((e) => {
+      console.error("[AutoTranslate] manualKickoff failed", e);
+      return { ok: false, error: String(e?.message || e) };
+    });
+  }
+  return false;
 });
 
 // ---- Triggers ----------------------------------------------------------
 
-async function kickoff(tab, mode) {
+async function kickoff(tab, opts = {}) {
+  await ensureDisplayScript(tab.id);
+  await messenger.tabs.sendMessage(tab.id, { type: "kickoff", force: !!opts.force });
+}
+
+// Triggered by the "Translate now" button in the popup. Finds the active mail
+// tab, clears its dedup entry so the same message can be re-translated, and
+// fires a forced kickoff that bypasses the enabled flag and same-language skip.
+async function manualKickoff() {
+  const [tab] = await messenger.tabs.query({ active: true, currentWindow: true });
+  if (!tab) return { ok: false, error: "No active tab." };
+
   try {
-    await ensureDisplayScript(tab.id);
-    await messenger.tabs.sendMessage(tab.id, { type: "kickoff", mode });
+    const messages = await messenger.messageDisplay.getDisplayedMessages(tab.id);
+    const first = messages?.[0];
+    if (first) autoTranslated.delete(first.id);
+  } catch (_) {
+    /* tab might not be a message display tab — let kickoff fail loudly below */
+  }
+
+  try {
+    await kickoff(tab, { force: true });
+    return { ok: true };
   } catch (e) {
-    console.error("[InlineTranslator] kickoff failed", e);
+    return { ok: false, error: String(e?.message || e) };
   }
 }
 
-messenger.messageDisplayAction.onClicked.addListener((tab) => {
-  log("toolbar click", tab.id);
-  kickoff(tab, "manual");
-});
+// The toolbar button is wired in the manifest as a popup (`default_popup`),
+// which opens the settings UI as a small attached panel. Translation itself
+// is fully automatic on every displayed message — see the listener below.
 
 messenger.messageDisplay.onMessagesDisplayed.addListener(async (tab, messageList) => {
-  // Cheap pre-filter: only run when the user has at least one auto-rule, and
-  // the message hasn't been processed already.
   const settings = await loadSettings();
-  if (!settings.autoRules?.some((r) => r && r.enabled)) return;
+  if (!settings.enabled) return;
 
-  const messages = messageList?.messages || (await messenger.messageDisplay.getDisplayedMessages(tab.id));
+  const messages =
+    messageList?.messages ||
+    (await messenger.messageDisplay.getDisplayedMessages(tab.id));
   const first = messages?.[0];
   if (!first || autoTranslated.has(first.id)) return;
   autoTranslated.add(first.id);
 
   log("auto kickoff for msg", first.id);
-  kickoff(tab, "auto");
+  kickoff(tab);
 });

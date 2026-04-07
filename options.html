@@ -2,27 +2,38 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Inline Translator — Settings</title>
+    <title>AutoTranslate — Settings</title>
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
-    <h1>Inline Translator</h1>
+    <h1>AutoTranslate</h1>
+    <p class="hint">
+      Every displayed message is translated automatically using the settings
+      below. The toolbar button opens this page.
+    </p>
+
+    <section>
+      <label>
+        <input type="checkbox" id="enabled" />
+        <strong>Enable automatic translation</strong>
+      </label>
+    </section>
 
     <section>
       <label for="targetLang"><strong>Default target language</strong></label>
       <p class="hint">
-        Source language is auto-detected. The toolbar button translates into this
-        language.
+        Source language is auto-detected. Messages already in this language are
+        left alone.
       </p>
       <select id="targetLang"></select>
     </section>
 
     <section>
-      <h2>Auto-translate rules</h2>
+      <h2>Per-language overrides</h2>
       <p class="hint">
-        When a displayed message is detected in the <em>From</em> language, it will
-        be translated automatically into <em>To</em> as soon as it is shown. Leave
-        <em>To</em> empty to use the default target language above.
+        Optional. When a message is detected in <em>From</em>, translate it to
+        <em>To</em> instead of the default target language above. Leave
+        <em>To</em> empty to use the default.
       </p>
 
       <table id="rulesTable">
@@ -42,7 +53,33 @@
 
     <section>
       <button type="button" id="save">Save</button>
+      <button type="button" id="translateNow">Translate now</button>
       <span id="status"></span>
+    </section>
+
+    <section id="support">
+      <h2>Support the developer</h2>
+      <p class="hint">
+        If this add-on saves you time, a small tip helps me keep it free.
+      </p>
+      <div class="support-links">
+        <a
+          href="https://buymeacoffee.com/yarkineren"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="support-btn coffee"
+        >
+          ☕ Buy me a coffee
+        </a>
+        <a
+          href="https://www.paypal.com/donate/?business=yarkin70@gmail.com&item_name=Inline+Translator&currency_code=EUR"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="support-btn paypal"
+        >
+          PayPal
+        </a>
+      </div>
     </section>
 
     <script src="options.js"></script>

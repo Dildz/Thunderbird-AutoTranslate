@@ -32,13 +32,21 @@ const LANGUAGES = [
   ["id", "Indonesian"],
 ];
 
-const DEFAULTS = { targetLang: "en", autoRules: [] };
+const DEFAULTS = { enabled: true, targetLang: "en", autoRules: [] };
 
+const enabledCheckbox = document.getElementById("enabled");
 const targetSelect = document.getElementById("targetLang");
 const rulesBody = document.getElementById("rulesBody");
 const addBtn = document.getElementById("addRule");
 const saveBtn = document.getElementById("save");
+const translateBtn = document.getElementById("translateNow");
 const statusEl = document.getElementById("status");
+
+function setStatus(text, isError) {
+  statusEl.textContent = text;
+  statusEl.style.color = isError ? "#a12a2a" : "#2a7a2a";
+  if (text) setTimeout(() => (statusEl.textContent = ""), 2500);
+}
 
 function buildLanguageOptions(select, { includeAuto, includeEmpty }) {
   select.innerHTML = "";
@@ -106,6 +114,7 @@ async function load() {
   buildLanguageOptions(targetSelect, { includeAuto: false, includeEmpty: false });
   const stored = await messenger.storage.local.get(DEFAULTS);
   const settings = { ...DEFAULTS, ...stored };
+  enabledCheckbox.checked = !!settings.enabled;
   targetSelect.value = settings.targetLang;
   rulesBody.innerHTML = "";
   for (const rule of settings.autoRules) addRuleRow(rule);
@@ -113,15 +122,32 @@ async function load() {
 
 async function save() {
   const payload = {
+    enabled: enabledCheckbox.checked,
     targetLang: targetSelect.value,
     autoRules: collectRules(),
   };
   await messenger.storage.local.set(payload);
-  statusEl.textContent = "Saved.";
-  setTimeout(() => (statusEl.textContent = ""), 1500);
+  setStatus("Saved.");
+}
+
+async function translateNow() {
+  setStatus("Translating…");
+  try {
+    const res = await messenger.runtime.sendMessage({ type: "manualKickoff" });
+    if (res?.ok) {
+      setStatus("Done.");
+      // Close the popup so the user sees the translated message immediately.
+      setTimeout(() => window.close(), 400);
+    } else {
+      setStatus(res?.error || "Failed.", true);
+    }
+  } catch (e) {
+    setStatus(String(e?.message || e), true);
+  }
 }
 
 addBtn.addEventListener("click", () => addRuleRow());
 saveBtn.addEventListener("click", save);
+translateBtn.addEventListener("click", translateNow);
 
 load();

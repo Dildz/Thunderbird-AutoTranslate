@@ -5,11 +5,11 @@
 //   2. Restore the originals on demand via a banner click.
 
 (function () {
-  if (window.__inlineTranslatorInstalled) return;
-  window.__inlineTranslatorInstalled = true;
+  if (window.__autoTranslateInstalled) return;
+  window.__autoTranslateInstalled = true;
 
-  const BANNER_ID = "inline-translator-banner";
-  const ERROR_ID = "inline-translator-error";
+  const BANNER_ID = "auto-translate-banner";
+  const ERROR_ID = "auto-translate-error";
 
   let originalTexts = null; // string[] aligned with collectedNodes
   let collectedNodes = null; // Text[]
@@ -34,9 +34,9 @@
   }
 
   function injectStylesOnce() {
-    if (document.getElementById("inline-translator-styles")) return;
+    if (document.getElementById("auto-translate-styles")) return;
     const style = document.createElement("style");
-    style.id = "inline-translator-styles";
+    style.id = "auto-translate-styles";
     style.textContent = `
       #${BANNER_ID}, #${ERROR_ID} {
         font: 12px/1.4 system-ui, -apple-system, Segoe UI, sans-serif;
@@ -102,8 +102,11 @@
 
   // ---- Kickoff --------------------------------------------------------
 
-  async function kickoff(mode) {
-    if (collectedNodes) return; // already translated; user must restore first
+  async function kickoff(force) {
+    if (collectedNodes) {
+      if (!force) return; // already translated; user must restore first
+      restoreOriginal(); // forced re-run: revert then translate fresh
+    }
     injectStylesOnce();
 
     const nodes = collectTextNodes(document.body);
@@ -112,7 +115,7 @@
 
     let res;
     try {
-      res = await messenger.runtime.sendMessage({ type: "translate", texts, mode });
+      res = await messenger.runtime.sendMessage({ type: "translate", texts, force });
     } catch (e) {
       showError("messaging failed: " + (e?.message || e));
       return;
@@ -130,7 +133,7 @@
 
   messenger.runtime.onMessage.addListener((msg) => {
     if (!msg?.type) return;
-    if (msg.type === "kickoff") kickoff(msg.mode);
+    if (msg.type === "kickoff") kickoff(msg.force);
     else if (msg.type === "restoreOriginal") restoreOriginal();
   });
 })();
