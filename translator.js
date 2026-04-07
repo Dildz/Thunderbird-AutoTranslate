@@ -1,29 +1,21 @@
-// Shared helper: call the unofficial Google Translate endpoint.
-// Used only from the background script (content scripts can't reach it cross-origin).
+// Translation helpers. Loaded into the background page before background.js.
+// All Google Translate calls live here so the rest of the codebase never has
+// to think about chunking, sentinels, or HTTP shapes.
 
 const GT_ENDPOINT = "https://translate.googleapis.com/translate_a/single";
-const MAX_CHUNK = 4500; // Google free endpoint practical cap per request.
 
-// Split `text` into chunks <= MAX_CHUNK, preferring paragraph/sentence boundaries.
-function splitForTranslate(text) {
-  if (text.length <= MAX_CHUNK) return [text];
+// Practical cap per request to the unofficial gtx endpoint.
+const MAX_CHUNK = 4500;
 
-  const chunks = [];
-  let remaining = text;
+// Sentinel inserted between text-node strings when packing many short pieces
+// into one request. Chosen to be (a) unlikely to be touched by the engine,
+// (b) easy to recover after small whitespace shifts, (c) cheap in characters.
+const SENTINEL = "\n\n@@@@@~~~~~@@@@@\n\n";
+const SENTINEL_LOOSE = /\s*@@@@@~~~~~@@@@@\s*/g;
 
-  while (remaining.length > MAX_CHUNK) {
-    let cut = remaining.lastIndexOf("\n\n", MAX_CHUNK);
-    if (cut < MAX_CHUNK / 2) cut = remaining.lastIndexOf("\n", MAX_CHUNK);
-    if (cut < MAX_CHUNK / 2) cut = remaining.lastIndexOf(". ", MAX_CHUNK);
-    if (cut < MAX_CHUNK / 2) cut = MAX_CHUNK;
-    chunks.push(remaining.slice(0, cut));
-    remaining = remaining.slice(cut);
-  }
-  if (remaining.length) chunks.push(remaining);
-  return chunks;
-}
+// ---- Low-level: one HTTP call -----------------------------------------
 
-async function translateChunk(text, target, source) {
+async function gtRequest(text, target, source) {
   const url = new URL(GT_ENDPOINT);
   url.search = new URLSearchParams({
     client: "gtx",
@@ -34,39 +26,89 @@ async function translateChunk(text, target, source) {
   }).toString();
 
   const res = await fetch(url.toString());
-  if (!res.ok) {
-    throw new Error(`Google Translate HTTP ${res.status}`);
-  }
+  if (!res.ok) throw new Error(`Google Translate HTTP ${res.status}`);
   const data = await res.json();
-  // data[0] is an array of [translatedSegment, originalSegment, ...].
-  // data[2] is the detected source language (only reliable on the first chunk).
-  const translated = (data[0] || [])
-    .map((seg) => (seg && seg[0]) || "")
-    .join("");
-  const detectedSource = data[2];
-  return { translated, detectedSource };
+
+  // data[0] = [[translatedSegment, originalSegment, ...], ...]
+  // data[2] = detected source language (only on the first request of a batch)
+  const translated = (data[0] || []).map((seg) => (seg && seg[0]) || "").join("");
+  return { translated, detectedSource: data[2] || null };
 }
 
-// Public: translate `text` into `target`, auto-detecting source by default.
-// Returns { translated, detectedSource }.
-async function callGoogleTranslate(text, target, source = "auto") {
-  if (!text || !text.trim()) {
-    return { translated: text, detectedSource: source };
-  }
+// ---- Single string, auto-chunked --------------------------------------
 
-  const chunks = splitForTranslate(text);
-  let detectedSource = source;
+function splitLongString(text) {
+  if (text.length <= MAX_CHUNK) return [text];
   const out = [];
+  let rest = text;
+  while (rest.length > MAX_CHUNK) {
+    let cut = rest.lastIndexOf("\n\n", MAX_CHUNK);
+    if (cut < MAX_CHUNK / 2) cut = rest.lastIndexOf("\n", MAX_CHUNK);
+    if (cut < MAX_CHUNK / 2) cut = rest.lastIndexOf(". ", MAX_CHUNK);
+    if (cut < MAX_CHUNK / 2) cut = MAX_CHUNK;
+    out.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest.length) out.push(rest);
+  return out;
+}
 
+async function callGoogleTranslate(text, target, source = "auto") {
+  if (!text || !text.trim()) return { translated: text, detectedSource: source };
+  const chunks = splitLongString(text);
+  let detectedSource = null;
+  const out = [];
   for (let i = 0; i < chunks.length; i++) {
-    const { translated, detectedSource: det } = await translateChunk(
-      chunks[i],
-      target,
-      source
-    );
-    if (i === 0 && det) detectedSource = det;
-    out.push(translated);
+    const r = await gtRequest(chunks[i], target, source);
+    if (i === 0) detectedSource = r.detectedSource;
+    out.push(r.translated);
+  }
+  return { translated: out.join(""), detectedSource };
+}
+
+// ---- Batch of N strings, alignment preserved --------------------------
+
+// Group `texts` into chunks of <= MAX_CHUNK joined by SENTINEL, translate
+// each group in one request, split the response back. Returns an array the
+// same length and order as `texts`.
+async function translateBatch(texts, target) {
+  const out = new Array(texts.length);
+  let detectedSource = null;
+
+  let i = 0;
+  while (i < texts.length) {
+    const groupIdx = [];
+    let combined = "";
+    while (i < texts.length) {
+      const piece = texts[i];
+      const addition = combined.length === 0 ? piece : SENTINEL + piece;
+      if (combined.length + addition.length > MAX_CHUNK && groupIdx.length > 0) break;
+      combined += addition;
+      groupIdx.push(i);
+      i++;
+      if (combined.length > MAX_CHUNK) break;
+    }
+
+    const { translated, detectedSource: det } = await gtRequest(combined, target);
+    if (!detectedSource && det) detectedSource = det;
+
+    let parts = translated.split(SENTINEL);
+    if (parts.length !== groupIdx.length) {
+      parts = translated.replace(SENTINEL_LOOSE, SENTINEL).split(SENTINEL);
+    }
+
+    if (parts.length === groupIdx.length) {
+      for (let k = 0; k < groupIdx.length; k++) out[groupIdx[k]] = parts[k];
+    } else {
+      // Fallback: translate this group's items individually so alignment
+      // is guaranteed. Slower, but only used when sentinels get mangled.
+      for (const idx of groupIdx) {
+        const r = await gtRequest(texts[idx], target);
+        if (!detectedSource && r.detectedSource) detectedSource = r.detectedSource;
+        out[idx] = r.translated;
+      }
+    }
   }
 
-  return { translated: out.join(""), detectedSource };
+  return { translations: out, detectedSource };
 }
