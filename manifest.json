@@ -1,0 +1,45 @@
+{
+  "manifest_version": 2,
+  "name": "Inline Translator",
+  "version": "0.1.0",
+  "description": "Translate received emails in place using Google Translate. No separate windows, no popups.",
+  "author": "yarkineren",
+
+  "applications": {
+    "gecko": {
+      "id": "inline-translator@yarkineren.local",
+      "strict_min_version": "115.0"
+    }
+  },
+
+  "permissions": [
+    "messagesRead",
+    "messagesModify",
+    "storage",
+    "https://translate.googleapis.com/*"
+  ],
+
+  "background": {
+    "scripts": ["translator.js", "background.js"]
+  },
+
+  "message_display_action": {
+    "default_title": "Translate message",
+    "default_icon": {
+      "16": "icons/translate-16.png",
+      "32": "icons/translate-32.png",
+      "64": "icons/translate-64.png"
+    }
+  },
+
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+
+  "icons": {
+    "16": "icons/translate-16.png",
+    "32": "icons/translate-32.png",
+    "64": "icons/translate-64.png"
+  }
+}

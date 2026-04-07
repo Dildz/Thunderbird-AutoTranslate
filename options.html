@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Inline Translator — Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <h1>Inline Translator</h1>
+
+    <section>
+      <label for="targetLang"><strong>Default target language</strong></label>
+      <p class="hint">
+        Source language is auto-detected. The toolbar button translates into this
+        language.
+      </p>
+      <select id="targetLang"></select>
+    </section>
+
+    <section>
+      <h2>Auto-translate rules</h2>
+      <p class="hint">
+        When a displayed message is detected in the <em>From</em> language, it will
+        be translated automatically into <em>To</em> as soon as it is shown. Leave
+        <em>To</em> empty to use the default target language above.
+      </p>
+
+      <table id="rulesTable">
+        <thead>
+          <tr>
+            <th>Enabled</th>
+            <th>From</th>
+            <th>To</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="rulesBody"></tbody>
+      </table>
+
+      <button type="button" id="addRule">+ Add rule</button>
+    </section>
+
+    <section>
+      <button type="button" id="save">Save</button>
+      <span id="status"></span>
+    </section>
+
+    <script src="options.js"></script>
+  </body>
+</html>
