@@ -2,6 +2,10 @@
 
 AutoTranslate automatically translates displayed emails in Thunderbird using Google Translate.
 
+## UI Preview
+
+![AutoTranslate UI](<Screenshot 2026-04-09 at 20.07.29.png>)
+
 ## Install
 
 1. Download `autotranslate.xpi`.
