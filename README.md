@@ -1,6 +1,6 @@
 # AutoTranslate (Thunderbird Add-on)
 
-AutoTranslate automatically translates displayed emails in Thunderbird using Google Translate.
+AutoTranslate automatically translates displayed emails in Thunderbird using Google Translate. Just like how it happens on gmail automatically!
 
 ## Install
 
