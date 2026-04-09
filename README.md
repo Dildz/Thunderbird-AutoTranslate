@@ -4,15 +4,12 @@ AutoTranslate automatically translates displayed emails in Thunderbird using Goo
 
 ## Install
 
-1. Download `autotranslate.xpi`.
+1. Download `autotranslate.xpi`. or whole repository 
 2. Open Thunderbird.
 3. Go to **Settings** -> **Add-ons and Themes**.
 4. Click the gear icon and choose **Install Add-on From File...**
 5. Select `autotranslate.xpi`.
 6. Confirm installation.
-
-> Use the `.xpi` file for installation.  
-> `manifest.json` is part of the source, not something you install directly.
 
 ## How to use
 
