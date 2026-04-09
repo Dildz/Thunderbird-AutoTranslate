@@ -5,7 +5,7 @@
   "description": "Translate received emails in place using Google Translate. No separate windows, no popups.",
   "author": "yarkineren",
 
-  "applications": {
+  "browser_specific_settings": {
     "gecko": {
       "id": "autotranslate@yarkineren.local",
       "strict_min_version": "115.0"
