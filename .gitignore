@@ -1,2 +1,3 @@
 # build artifact - published to GitHub releases, not committed
 *.xpi
+*.zip
