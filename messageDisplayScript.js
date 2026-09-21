@@ -13,6 +13,14 @@
 
   let originalTexts = null; // string[] aligned with collectedNodes
   let collectedNodes = null; // Text[]
+  let inFlight = null; // Promise of the job currently running, if any
+
+  // Whether what is on screen right now is our translation. Nodes captured
+  // from an earlier render are detached, so a truthy `collectedNodes` on its
+  // own proves nothing.
+  function translationIsLive() {
+    return !!(collectedNodes?.length && collectedNodes[0].isConnected);
+  }
 
   // ---- DOM helpers ----------------------------------------------------
 
@@ -71,8 +79,12 @@
     document.body.insertBefore(banner, document.body.firstChild);
   }
 
-  function showError(message) {
+  function clearError() {
     document.getElementById(ERROR_ID)?.remove();
+  }
+
+  function showError(message) {
+    clearError();
     const bar = document.createElement("div");
     bar.id = ERROR_ID;
     bar.textContent = "Translation failed: " + message;
@@ -93,7 +105,9 @@
   function restoreOriginal() {
     if (!collectedNodes || !originalTexts) return;
     for (let i = 0; i < collectedNodes.length; i++) {
-      collectedNodes[i].nodeValue = originalTexts[i];
+      if (collectedNodes[i].isConnected) {
+        collectedNodes[i].nodeValue = originalTexts[i];
+      }
     }
     collectedNodes = null;
     originalTexts = null;
@@ -102,38 +116,77 @@
 
   // ---- Kickoff --------------------------------------------------------
 
-  async function kickoff(force) {
-    if (collectedNodes) {
-      if (!force) return; // already translated; user must restore first
+  async function runTranslation(force) {
+    if (translationIsLive()) {
+      if (!force) return { ok: true, skip: true };
       restoreOriginal(); // forced re-run: revert then translate fresh
+    } else {
+      // Left over from a previous render of this document — drop it, the
+      // nodes it points at are no longer on screen.
+      collectedNodes = null;
+      originalTexts = null;
     }
+
+    if (!document.body) return { ok: true, skip: true };
     injectStylesOnce();
 
     const nodes = collectTextNodes(document.body);
-    if (!nodes.length) return;
+    if (!nodes.length) return { ok: true, skip: true };
     const texts = nodes.map((n) => n.nodeValue);
 
     let res;
     try {
       res = await messenger.runtime.sendMessage({ type: "translate", texts, force });
     } catch (e) {
-      showError("messaging failed: " + (e?.message || e));
-      return;
+      const error = "messaging failed: " + (e?.message || e);
+      showError(error);
+      return { ok: false, error };
     }
 
     if (!res?.ok) {
-      showError(res?.error || "unknown error");
-      return;
+      const error = res?.error || "unknown error";
+      showError(error);
+      return { ok: false, error };
     }
-    if (res.skip) return;
+    if (res.skip) return { ok: true, skip: true };
 
+    // The message was swapped out while we were waiting — writing into these
+    // nodes would do nothing visible and would leave stale state behind.
+    if (!nodes[0].isConnected) return { ok: true, skip: true };
+
+    clearError();
     applyTranslations(nodes, texts, res.translations || []);
     showBanner(res.detectedSource, res.targetLang);
+    return { ok: true };
+  }
+
+  // Serialises jobs within this document: a second kickoff can otherwise
+  // collect the same nodes before the first has written to them, producing
+  // two translations of the same text and two requests.
+  function kickoff(force) {
+    if (inFlight && !force) return inFlight;
+
+    const previous = inFlight;
+    const job = (async () => {
+      if (previous) await previous.catch(() => {});
+      return runTranslation(force);
+    })();
+
+    inFlight = job;
+    job
+      .finally(() => {
+        // Only the job that is still the current one may clear the slot; a
+        // newer forced job may already have taken it.
+        if (inFlight === job) inFlight = null;
+      })
+      .catch(() => {});
+    return job;
   }
 
   messenger.runtime.onMessage.addListener((msg) => {
     if (!msg?.type) return;
-    if (msg.type === "kickoff") kickoff(msg.force);
-    else if (msg.type === "restoreOriginal") restoreOriginal();
+    // Returned so the sender can await the outcome rather than the handoff.
+    if (msg.type === "kickoff") return kickoff(msg.force);
+    if (msg.type === "restoreOriginal") restoreOriginal();
   });
 })();

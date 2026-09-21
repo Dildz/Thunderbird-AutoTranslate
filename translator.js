@@ -4,8 +4,20 @@
 
 const GT_ENDPOINT = "https://translate.googleapis.com/translate_a/single";
 
-// Practical cap per request to the unofficial gtx endpoint.
+// Client identifier sent to the endpoint. `gtx` is flagged as automated
+// traffic and answered with HTTP 429 + a captcha page; `dict-chrome-ex`
+// (used by Google's own Translate extension) returns the identical JSON
+// shape without the block.
+const GT_CLIENT = "dict-chrome-ex";
+
+// Practical cap per request to the unofficial endpoint.
 const MAX_CHUNK = 4500;
+
+// Network behaviour. Requests are retried only for transient failures
+// (timeout, 429, 5xx); a 4xx other than 429 is a request we built wrong and
+// retrying it just wastes the rate-limit budget.
+const REQUEST_TIMEOUT_MS = 15000;
+const MAX_ATTEMPTS = 4;
 
 // Sentinel inserted between text-node strings when packing many short pieces
 // into one request. Chosen to be (a) unlikely to be touched by the engine,
@@ -15,24 +27,75 @@ const SENTINEL_LOOSE = /\s*@@@@@~~~~~@@@@@\s*/g;
 
 // ---- Low-level: one HTTP call -----------------------------------------
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ponytail: fixed exponential backoff with jitter. If Google ever starts
+// sending Retry-After, read it here instead.
+function backoffDelay(attempt) {
+  return 500 * 2 ** (attempt - 1) + Math.floor(Math.random() * 250);
+}
+
+async function fetchWithTimeout(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function gtRequest(text, target, source) {
   const url = new URL(GT_ENDPOINT);
   url.search = new URLSearchParams({
-    client: "gtx",
+    client: GT_CLIENT,
     sl: source || "auto",
     tl: target,
     dt: "t",
     q: text,
   }).toString();
 
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`Google Translate HTTP ${res.status}`);
-  const data = await res.json();
+  let lastError = new Error("Google Translate: no attempt made");
 
-  // data[0] = [[translatedSegment, originalSegment, ...], ...]
-  // data[2] = detected source language (only on the first request of a batch)
-  const translated = (data[0] || []).map((seg) => (seg && seg[0]) || "").join("");
-  return { translated, detectedSource: data[2] || null };
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (attempt > 1) await sleep(backoffDelay(attempt - 1));
+
+    let res;
+    try {
+      res = await fetchWithTimeout(url.toString());
+    } catch (e) {
+      lastError =
+        e?.name === "AbortError"
+          ? new Error(`Google Translate timed out after ${REQUEST_TIMEOUT_MS}ms`)
+          : e;
+      continue;
+    }
+
+    if (!res.ok) {
+      // 429 = rate limited / flagged, 5xx = their side. Both worth retrying.
+      if (res.status === 429 || res.status >= 500) {
+        lastError = new Error(`Google Translate HTTP ${res.status}`);
+        continue;
+      }
+      throw new Error(`Google Translate HTTP ${res.status}`);
+    }
+
+    let data;
+    try {
+      data = await res.json();
+    } catch (e) {
+      // A 200 that isn't JSON is the bot-detection HTML page. Retryable.
+      lastError = new Error("Google Translate returned a non-JSON response");
+      continue;
+    }
+
+    // data[0] = [[translatedSegment, originalSegment, ...], ...]
+    // data[2] = detected source language
+    const translated = (data[0] || []).map((seg) => (seg && seg[0]) || "").join("");
+    return { translated, detectedSource: data[2] || null };
+  }
+
+  throw lastError;
 }
 
 // ---- Single string, auto-chunked --------------------------------------

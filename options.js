@@ -135,7 +135,9 @@ async function translateNow() {
   try {
     const res = await messenger.runtime.sendMessage({ type: "manualKickoff" });
     if (res?.ok) {
-      setStatus("Done.");
+      // manualKickoff now resolves only once the translation has actually
+      // been applied, so this is a real result rather than a handoff ack.
+      setStatus(res.skip ? "Nothing to translate." : "Done.");
       // Close the popup so the user sees the translated message immediately.
       setTimeout(() => window.close(), 400);
     } else {

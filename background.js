@@ -15,11 +15,6 @@ const DEFAULT_SETTINGS = {
   autoRules: [],
 };
 
-// Messages we've already auto-translated this session — keyed by message id.
-// Prevents `onMessagesDisplayed` from re-firing translations as the user
-// scrolls back and forth.
-const autoTranslated = new Set();
-
 async function loadSettings() {
   const stored = await messenger.storage.local.get(DEFAULT_SETTINGS);
   return { ...DEFAULT_SETTINGS, ...stored };
@@ -39,8 +34,20 @@ async function loadSettings() {
   }
 })();
 
+// `onMessagesDisplayed` can land fractionally before the message document is
+// ready to accept an injection, which used to surface as a silent failure.
+// ponytail: three short tries is enough in practice; if this ever needs to be
+// exact, listen for the document's own load event instead.
 async function ensureDisplayScript(tabId) {
-  await messenger.tabs.executeScript(tabId, { file: "messageDisplayScript.js" });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await messenger.tabs.executeScript(tabId, { file: "messageDisplayScript.js" });
+      return;
+    } catch (e) {
+      if (attempt === 3) throw e;
+      await new Promise((r) => setTimeout(r, 150 * attempt));
+    }
+  }
 }
 
 // ---- Translation request handler --------------------------------------
@@ -109,29 +116,26 @@ messenger.runtime.onMessage.addListener((msg) => {
 
 // ---- Triggers ----------------------------------------------------------
 
+// Resolves once the display script has actually finished translating (or
+// failed), not merely once the kickoff message has been handed over — the
+// popup's "Translate now" depends on that to report an honest result.
 async function kickoff(tab, opts = {}) {
   await ensureDisplayScript(tab.id);
-  await messenger.tabs.sendMessage(tab.id, { type: "kickoff", force: !!opts.force });
+  const result = await messenger.tabs.sendMessage(tab.id, {
+    type: "kickoff",
+    force: !!opts.force,
+  });
+  return result || { ok: true };
 }
 
-// Triggered by the "Translate now" button in the popup. Finds the active mail
-// tab, clears its dedup entry so the same message can be re-translated, and
-// fires a forced kickoff that bypasses the enabled flag and same-language skip.
+// Triggered by the "Translate now" button in the popup. Fires a forced
+// kickoff that bypasses the enabled flag and the same-language skip.
 async function manualKickoff() {
   const [tab] = await messenger.tabs.query({ active: true, currentWindow: true });
   if (!tab) return { ok: false, error: "No active tab." };
 
   try {
-    const messages = await messenger.messageDisplay.getDisplayedMessages(tab.id);
-    const first = messages?.[0];
-    if (first) autoTranslated.delete(first.id);
-  } catch (_) {
-    /* tab might not be a message display tab — let kickoff fail loudly below */
-  }
-
-  try {
-    await kickoff(tab, { force: true });
-    return { ok: true };
+    return await kickoff(tab, { force: true });
   } catch (e) {
     return { ok: false, error: String(e?.message || e) };
   }
@@ -141,17 +145,20 @@ async function manualKickoff() {
 // which opens the settings UI as a small attached panel. Translation itself
 // is fully automatic on every displayed message — see the listener below.
 
-messenger.messageDisplay.onMessagesDisplayed.addListener(async (tab, messageList) => {
+// Every display gets a kickoff, including returning to a message translated
+// earlier: that message is re-rendered from scratch, so its translation is
+// gone and has to be redone. Re-entry within a single rendered document is
+// guarded inside the display script, which is the only place that can tell
+// whether the text on screen is still translated.
+messenger.messageDisplay.onMessagesDisplayed.addListener(async (tab) => {
   const settings = await loadSettings();
   if (!settings.enabled) return;
 
-  const messages =
-    messageList?.messages ||
-    (await messenger.messageDisplay.getDisplayedMessages(tab.id));
-  const first = messages?.[0];
-  if (!first || autoTranslated.has(first.id)) return;
-  autoTranslated.add(first.id);
-
-  log("auto kickoff for msg", first.id);
-  kickoff(tab);
+  try {
+    await kickoff(tab);
+  } catch (e) {
+    // Never swallow this: a failure here used to leave the message
+    // permanently untranslated with nothing logged.
+    console.error("[AutoTranslate] auto kickoff failed", e);
+  }
 });
